@@ -1,4 +1,4 @@
-import openai
+import requests
 from utility import getGameData, in_meeting, get_chat_messages, clear_chat, translatePlayerColorID, allTasksDone, get_nearby_players, load_G, get_kill_list, get_num_alive_players
 import time
 import pyautogui
@@ -8,16 +8,14 @@ import sys, os
 sys.path.append(os.path.dirname(os.path.realpath(__file__)) + "/task-solvers")
 from task_utility import get_dimensions, get_screen_coords, wake, get_screen_ratio
 
-API_KEY = ""
+GROQ_API_KEY = ""
 try:
-    with open("APIkey.txt") as f:
-        API_KEY = f.readline().rstrip()
+    with open("GROQ_APIkey.txt") as f:
+        GROQ_API_KEY = f.readline().rstrip()
     f.close()
 except:
     print("No API key detected. Automatic chatting disabled.")
     raise SystemExit(0)
-
-openai.api_key = API_KEY
 
 with open("sendDataDir.txt") as f:
     line = f.readline().rstrip()
@@ -62,16 +60,28 @@ def get_meeting_time():
         time = int(f.readline())
     return time
 
-def ask_gpt(prompts : str) -> str: 
+def ask_gpt(prompts : list) -> str: 
     print("sent prompt")
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=prompts
-    )
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {GROQ_API_KEY}"
+    }
+    data = {
+        "model": "llama3-8b-8192",
+        "messages": prompts,
+        "max_tokens": 80,
+        "temperature": 0.7
+    }
+    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
 
-    message = response['choices'][0]['message']['content']
-    print("returned message")
-    return message.rstrip()
+    if response.status_code == 200:
+        message = response.json()['choices'][0]['message']['content']
+        print("returned message")
+        return message.rstrip()
+    else:
+        print(f"Error: {response.status_code}")
+        print(response.json())
+        return ""
 
 # min difference is 46
 cols_dict = {"RED" : (208, 68, 74), "BLUE" : (62, 91, 234), "GREEN" : (55, 156, 95), "PINK" : (241, 123, 217), 
@@ -236,8 +246,8 @@ while in_meeting() and not decided_to_vote:
                 pyautogui.typewrite(f"{response.lower()}\n", interval=0.025)
             is_new_chats = False
             time.sleep(4)
-    except openai.error.RateLimitError:
-        print("Rate limit reached")
+    except requests.exceptions.RequestException as e:
+        print(f"Request error: {e}")
         break
 
 get_names_dict()
@@ -250,17 +260,4 @@ res = ask_gpt(prompts)
 col_array = ["RED", "BLUE", "GREEN", "PINK",
                 "ORANGE", "YELLOW", "BLACK", "WHITE",
                 "PURPLE", "BROWN", "CYAN", "LIME",
-                "MAROON", "ROSE", "BANANA", "GRAY",
-                "TAN", "CORAL", "GREY"]
-c = "skip"
-for color1 in col_array:
-    if color1 in res.upper() and color1 != color:
-        c = color1
-if c == "skip":
-    for name in names_dict:
-        if name.lower() in res.lower() and translatePlayerColorID(names_dict[name]) != color:
-            c = translatePlayerColorID(names_dict[name])
-print("Vote: " + res)
-print(c)
-vote(c.upper())
-time.sleep(10)
+                "MAROON", "ROSE", "
