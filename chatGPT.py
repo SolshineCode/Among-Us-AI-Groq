@@ -1,4 +1,4 @@
-import requests
+import openai
 from utility import getGameData, in_meeting, get_chat_messages, clear_chat, translatePlayerColorID, allTasksDone, get_nearby_players, load_G, get_kill_list, get_num_alive_players
 import time
 import pyautogui
@@ -7,15 +7,137 @@ import re
 import sys, os
 sys.path.append(os.path.dirname(os.path.realpath(__file__)) + "/task-solvers")
 from task_utility import get_dimensions, get_screen_coords, wake, get_screen_ratio
+# New Imports for ollama and groq
+from groq import Groq
+import requests
+import json
+from enum import Enum
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
 
-GROQ_API_KEY = ""
-try:
-    with open("GROQ_APIkey.txt") as f:
-        GROQ_API_KEY = f.readline().rstrip()
-    f.close()
-except:
-    print("No API key detected. Automatic chatting disabled.")
-    raise SystemExit(0)
+# Adding new configuration class and enums
+
+@dataclass
+class LLMConfig:
+    provider: LLMProvider
+    api_key: Optional[str] = None
+    model_name: str = "gpt-3.5-turbo"
+    temperature: float = 1.0
+    max_tokens: Optional[int] = None
+    top_p: float = 1.0
+    # Ollama specific
+    api_base: str = "http://localhost:11434"
+
+class LLMManager:
+    def __init__(self, config: LLMConfig):
+        self.config = config
+        self._setup_client()
+    
+    def _setup_client(self):
+        if self.config.provider == LLMProvider.OPENAI:
+            openai.api_key = self.config.api_key
+        elif self.config.provider == LLMProvider.GROQ:
+            self.client = Groq(api_key=self.config.api_key)
+    
+    def generate_response(self, messages: List[Dict[str, str]]) -> str:
+        try:
+            if self.config.provider == LLMProvider.OPENAI:
+                response = openai.ChatCompletion.create(
+                    model=self.config.model_name,
+                    messages=messages,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                    top_p=self.config.top_p
+                )
+                return response['choices'][0]['message']['content'].rstrip()
+            
+            elif self.config.provider == LLMProvider.GROQ:
+                # Using Groq's OpenAI-compatible API
+                response = self.client.chat.completions.create(
+                    model=self.config.model_name,
+                    messages=messages,
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens,
+                    top_p=self.config.top_p
+                )
+                return response.choices[0].message.content.rstrip()
+            
+            elif self.config.provider == LLMProvider.OLLAMA:
+                # Using Ollama's chat endpoint
+                response = requests.post(
+                    f"{self.config.api_base}/api/chat",
+                    json={
+                        "model": self.config.model_name,
+                        "messages": messages,
+                        "options": {
+                            "temperature": self.config.temperature,
+                            "top_p": self.config.top_p
+                        },
+                        "stream": False
+                    }
+                )
+                if response.status_code == 200:
+                    return response.json()['message']['content'].rstrip()
+                else:
+                    raise Exception(f"Ollama API error: {response.text}")
+            
+        except Exception as e:
+            print(f"Error generating response with {self.config.provider.value}: {str(e)}")
+            return ""
+
+
+def load_llm_config() -> LLMConfig:
+    """Load LLM configuration from llm_config.json"""
+    default_config = {
+        "provider": "openai",
+        "model_name": "gpt-3.5-turbo",
+        "temperature": 1.0,
+        "max_tokens": None,
+        "top_p": 1.0,
+        "api_base": "http://localhost:11434"
+    }
+    
+    try:
+        with open("llm_config.json", "r") as f:
+            config = json.load(f)
+            default_config.update(config)
+    except FileNotFoundError:
+        pass
+    
+    # Load API key if needed
+    api_key = None
+    if default_config["provider"] in ["openai", "groq"]:
+        try:
+            with open("APIkey.txt") as f:
+                api_key = f.readline().rstrip()
+        except FileNotFoundError:
+            print(f"No API key found for {default_config['provider']}")
+            raise SystemExit(0)
+    
+    return LLMConfig(
+        provider=LLMProvider(default_config["provider"]),
+        api_key=api_key,
+        model_name=default_config["model_name"],
+        temperature=default_config["temperature"],
+        max_tokens=default_config["max_tokens"],
+        top_p=default_config["top_p"],
+        api_base=default_config["api_base"]
+    )
+
+# Initialize the LLM manager
+config = load_llm_config()
+llm_manager = LLMManager(config)
+
+def ask_llm(prompts: List[Dict[str, str]]) -> str:
+    """Unified function to interact with any configured LLM"""
+    print(f"Sending prompt to {llm_manager.config.provider.value}")
+    try:
+        response = llm_manager.generate_response(prompts)
+        print("Returned message")
+        return response
+    except Exception as e:
+        print(f"Error in LLM response: {str(e)}")
+        return ""
 
 with open("sendDataDir.txt") as f:
     line = f.readline().rstrip()
@@ -59,29 +181,6 @@ def get_meeting_time():
     with open(VOTE_TIME_PATH) as f:
         time = int(f.readline())
     return time
-
-def ask_gpt(prompts : list) -> str: 
-    print("sent prompt")
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {GROQ_API_KEY}"
-    }
-    data = {
-        "model": "llama3-8b-8192",
-        "messages": prompts,
-        "max_tokens": 80,
-        "temperature": 0.7
-    }
-    response = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=data)
-
-    if response.status_code == 200:
-        message = response.json()['choices'][0]['message']['content']
-        print("returned message")
-        return message.rstrip()
-    else:
-        print(f"Error: {response.status_code}")
-        print(response.json())
-        return ""
 
 # min difference is 46
 cols_dict = {"RED" : (208, 68, 74), "BLUE" : (62, 91, 234), "GREEN" : (55, 156, 95), "PINK" : (241, 123, 217), 
@@ -225,7 +324,7 @@ while in_meeting() and not decided_to_vote:
         if is_new_chats:
             pyautogui.click(x,y)
             time.sleep(0.1)
-            response = ask_gpt(prompts)
+            response = ask_llm(prompts)
             new_response = " "
             for line in response.splitlines():
                 if "VOTE: " in line:
@@ -246,8 +345,8 @@ while in_meeting() and not decided_to_vote:
                 pyautogui.typewrite(f"{response.lower()}\n", interval=0.025)
             is_new_chats = False
             time.sleep(4)
-    except requests.exceptions.RequestException as e:
-        print(f"Request error: {e}")
+    except openai.error.RateLimitError:
+        print("Rate limit reached")
         break
 
 get_names_dict()
@@ -256,8 +355,21 @@ while time.time() - meeting_start_time < get_meeting_time() - 12:
     time.sleep(1/15)
 
 prompts.append({"role": "user", "content": "You have 10 seconds left to vote. How do you vote? Your response should be formatted as 'VOTE: {COLOR to vote}' or 'VOTE: skip' to skip"})
-res = ask_gpt(prompts)
+res = ask_llm(prompts)
 col_array = ["RED", "BLUE", "GREEN", "PINK",
                 "ORANGE", "YELLOW", "BLACK", "WHITE",
                 "PURPLE", "BROWN", "CYAN", "LIME",
-                "MAROON", "ROSE", "
+                "MAROON", "ROSE", "BANANA", "GRAY",
+                "TAN", "CORAL", "GREY"]
+c = "skip"
+for color1 in col_array:
+    if color1 in res.upper() and color1 != color:
+        c = color1
+if c == "skip":
+    for name in names_dict:
+        if name.lower() in res.lower() and translatePlayerColorID(names_dict[name]) != color:
+            c = translatePlayerColorID(names_dict[name])
+print("Vote: " + res)
+print(c)
+vote(c.upper())
+time.sleep(10)
